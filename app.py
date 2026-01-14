@@ -9,61 +9,125 @@ import smtplib
 from email.mime.text import MIMEText
 import random
 import string
+import time
+from datetime import datetime, timezone, timedelta
 
-# === 頁面設定 ===
-st.set_page_config(page_title="經銷牌價系統", layout="wide")
+# === 1. 頁面設定 ===
+st.set_page_config(page_title="士電牌價查詢系統", layout="wide")
 
-# === CSS: 隱藏工具列 ===
+# === CSS: 介面優化 ===
 st.markdown("""
 <style>
+/* 隱藏預設選單與頁尾 */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
 [data-testid="stElementToolbar"] { display: none; }
+.stAppDeployButton {display: none;}
+[data-testid="stManageAppButton"] {display: none;}
+
+/* 強制表格標頭 (Header) 置中 */
+th { text-align: center !important; }
+
+/* 調整搜尋框的大小與字體 */
+input[type="text"] { font-size: 1.2rem; }
+
+/* 側邊欄計算機樣式 */
+.calc-box {
+    background-color: #f0f2f6;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    border: 1px solid #d1d5db;
+}
+.product-title {
+    font-weight: bold;
+    color: #1f77b4;
+    font-size: 1.1rem;
+    margin-bottom: 5px;
+}
+.price-tag {
+    font-size: 1rem;
+    color: #333;
+    margin-bottom: 15px;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-#  🔐 雲端資安設定 (改從 Secrets 讀取)
+#  🔐 雲端資安設定 & 全域變數
 # ==========================================
-# 嘗試從雲端秘密金庫讀取，如果沒有(在本機跑)，才使用預設值
 if "email" in st.secrets:
     SMTP_EMAIL = st.secrets["email"]["smtp_email"]
     SMTP_PASSWORD = st.secrets["email"]["smtp_password"]
 else:
-    # 這裡可以留空，或者填入您本機測試用的 (上傳時即使這裡有寫，雲端也會優先讀 Secrets)
-    SMTP_EMAIL = "您的Gmail帳號@gmail.com" 
-    SMTP_PASSWORD = "您的16位數應用程式密碼"
+    SMTP_EMAIL = ""
+    SMTP_PASSWORD = ""
 
 GOOGLE_SHEET_NAME = '經銷牌價表_資料庫'
-# LOCAL_KEY_FILE 在雲端用不到，但保留變數以免報錯
-LOCAL_KEY_FILE = 'service_account.json' 
-
 SEARCH_COLS = ['NO.', '規格', '說明']
+# 為了讓使用者選取，我們需要在 DataFrame 裡識別每一行，這裡用 Index
 DISPLAY_COLS = ['規格', '牌價', '經銷價', '說明', '訂購品(V)']
 
-# === Session State ===
+# === Session State 初始化 ===
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
-# ... (以下程式碼保持不變)
-if 'user_email' not in st.session_state: # 改名：存 Email
+if 'user_email' not in st.session_state:
     st.session_state.user_email = ""
 if 'real_name' not in st.session_state:
     st.session_state.real_name = ""
+if 'login_attempts' not in st.session_state:
+    st.session_state.login_attempts = 0
+
+# === [新增] 計算機相關 State ===
+if 'selected_product' not in st.session_state:
+    st.session_state.selected_product = None # 存 {規格:..., 經銷價:...}
+if 'input_discount' not in st.session_state:
+    st.session_state.input_discount = 0.0
+if 'input_price' not in st.session_state:
+    st.session_state.input_price = 0.0
 
 # === 連線函式 ===
 def get_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    if os.path.exists(LOCAL_KEY_FILE):
-        creds = ServiceAccountCredentials.from_json_keyfile_name(LOCAL_KEY_FILE, scope)
-    elif "gcp_service_account" in st.secrets:
+    if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
+    elif os.path.exists('service_account.json'):
+        creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+        return gspread.authorize(creds)
     else:
         return None
-    return gspread.authorize(creds)
 
-# === 加密與亂數工具 ===
-def check_password(plain_text, hashed_text):
+# === 工具函式 ===
+def get_tw_time():
+    tw_tz = timezone(timedelta(hours=8))
+    return datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+def write_log(action, user_email, note=""):
+    client = get_client()
+    if not client: return
     try:
-        return bcrypt.checkpw(plain_text.encode('utf-8'), hashed_text.encode('utf-8'))
+        sh = client.open(GOOGLE_SHEET_NAME)
+        try:
+            ws = sh.worksheet("Logs")
+        except:
+            return 
+        ws.append_row([get_tw_time(), user_email, action, note])
+    except:
+        pass
+
+def get_greeting():
+    tw_tz = timezone(timedelta(hours=8))
+    current_hour = datetime.now(tw_tz).hour
+    if 5 <= current_hour < 11: return "早安 ☀️"
+    elif 11 <= current_hour < 18: return "你好 👋"
+    elif 18 <= current_hour < 23: return "晚安 🌙"
+    else: return "夜深了，不要太累了 ☕"
+
+def check_password(plain_text, hashed_text):
+    try: return bcrypt.checkpw(plain_text.encode('utf-8'), hashed_text.encode('utf-8'))
     except: return False
 
 def hash_password(plain_text):
@@ -73,94 +137,28 @@ def generate_random_password(length=8):
     chars = string.ascii_letters + string.digits
     return ''.join(random.choice(chars) for i in range(length))
 
-# === 寄信函式 (修正版：改用 Port 587 防止被擋) ===
 def send_reset_email(to_email, new_password):
-    if "您的Gmail" in SMTP_EMAIL: 
-        return False, "管理者尚未設定寄信信箱。"
-        
-    subject = "【經銷牌價系統】密碼重置通知"
-    body = f"""
-    您好：
-    
-    您的系統密碼已重置。
-    
-    新密碼為：{new_password}
-    
-    請使用此密碼登入後，盡快修改為您習慣的密碼。
-    """
-    
-    msg = MIMEText(body)
-    msg['Subject'] = subject
-    msg['From'] = SMTP_EMAIL
-    msg['To'] = to_email
-
+    if not SMTP_EMAIL or not SMTP_PASSWORD: return False, "系統未設定寄信信箱。"
+    subject = "【士林電機FA】密碼重置通知"
+    body = f"您好：\n您的系統密碼已重置。\n新密碼為：{new_password}\n請使用此密碼登入後，盡快修改為您習慣的密碼。"
+    msg = MIMEText(body); msg['Subject'] = subject; msg['From'] = SMTP_EMAIL; msg['To'] = to_email
     try:
-        # 改用 587 Port (TLS 加密模式)，穿透力較強
         with smtplib.SMTP('smtp.gmail.com', 587) as smtp:
-            smtp.ehlo()      # 向伺服器打招呼
-            smtp.starttls()  # 啟動加密傳輸
-            smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
-            smtp.send_message(msg)
+            smtp.ehlo(); smtp.starttls(); smtp.login(SMTP_EMAIL, SMTP_PASSWORD); smtp.send_message(msg)
         return True, "信件發送成功"
-    except Exception as e:
-        return False, f"寄信失敗: {str(e)}"
-    if "您的Gmail" in SMTP_EMAIL: 
-        return False, "管理者尚未設定寄信信箱。"
-        
-    subject = "【經銷牌價系統】密碼重置通知"
-    body = f"""
-    您好：
-    
-    您的系統密碼已重置。
-    
-    新密碼為：{new_password}
-    
-    請使用此密碼登入後，盡快修改為您習慣的密碼。
-    """
-    
-    msg = MIMEText(body)
-    msg['Subject'] = subject
-    msg['From'] = SMTP_EMAIL
-    msg['To'] = to_email
+    except Exception as e: return False, "寄信失敗，請稍後再試。"
 
+@st.cache_data(ttl=600)
+def get_update_date():
+    client = get_client()
+    if not client: return ""
     try:
-        # 改用 587 Port (TLS 加密模式)，穿透力較強
-        with smtplib.SMTP('smtp.gmail.com', 587) as smtp:
-            smtp.ehlo()      # 向伺服器打招呼
-            smtp.starttls()  # 啟動加密傳輸
-            smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
-            smtp.send_message(msg)
-        return True, "信件發送成功"
-    except Exception as e:
-        return False, f"寄信失敗: {str(e)}"
-    if "您的Gmail" in SMTP_EMAIL: 
-        return False, "管理者尚未設定寄信信箱。"
-        
-    subject = "【經銷牌價系統】密碼重置通知"
-    body = f"""
-    您好：
-    
-    您的系統密碼已重置。
-    
-    新密碼為：{new_password}
-    
-    請使用此密碼登入後，盡快修改為您習慣的密碼。
-    """
-    
-    msg = MIMEText(body)
-    msg['Subject'] = subject
-    msg['From'] = SMTP_EMAIL
-    msg['To'] = to_email
+        sh = client.open(GOOGLE_SHEET_NAME)
+        ws = sh.worksheet("Users")
+        date_val = ws.cell(1, 4).value
+        return date_val if date_val else "未知"
+    except: return "未知"
 
-    try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
-            smtp.send_message(msg)
-        return True, "信件發送成功"
-    except Exception as e:
-        return False, f"寄信失敗: {str(e)}"
-
-# === 核心邏輯 (Email 版) ===
 def login(email, password):
     client = get_client()
     if not client: return False, "連線失敗"
@@ -168,20 +166,18 @@ def login(email, password):
         sh = client.open(GOOGLE_SHEET_NAME)
         ws = sh.worksheet("Users")
         users = ws.get_all_records()
-        
-        # 尋找 Email
         for user in users:
-            # 確保轉成字串並移除前後空白
-            db_email = str(user.get('email')).strip()
-            if db_email == email.strip():
+            if str(user.get('email')).strip() == email.strip():
                 if check_password(password, str(user.get('password'))):
                     found_name = str(user.get('name')) if user.get('name') else email
+                    write_log("登入成功", email)
                     return True, found_name
                 else:
+                    write_log("登入失敗", email, "密碼錯誤")
                     return False, "密碼錯誤"
+        write_log("登入失敗", email, "帳號不存在")
         return False, "此 Email 尚未註冊"
-    except Exception as e:
-        return False, f"系統錯誤: {str(e)}"
+    except Exception as e: return False, "登入過程錯誤"
 
 def change_password(email, new_password):
     client = get_client()
@@ -189,10 +185,10 @@ def change_password(email, new_password):
     try:
         sh = client.open(GOOGLE_SHEET_NAME)
         ws = sh.worksheet("Users")
-        # 直接在 A 欄 (Col 1) 找 Email
         cell = ws.find(email)
         if cell:
             ws.update_cell(cell.row, 2, hash_password(new_password))
+            write_log("修改密碼", email, "使用者自行修改")
             return True
         return False
     except: return False
@@ -200,34 +196,19 @@ def change_password(email, new_password):
 def reset_password_flow(target_email):
     client = get_client()
     if not client: return False, "連線失敗"
-    
     try:
         sh = client.open(GOOGLE_SHEET_NAME)
         ws = sh.worksheet("Users")
-        
-        # 在 A 欄尋找 Email
-        try:
-            cell = ws.find(target_email.strip())
-        except gspread.exceptions.CellNotFound:
-             return False, "此 Email 尚未註冊"
-            
-        # 1. 產生新密碼
+        try: cell = ws.find(target_email.strip())
+        except gspread.exceptions.CellNotFound: return False, "此 Email 尚未註冊"
         new_pw = generate_random_password()
-        
-        # 2. 寄信
         sent, msg = send_reset_email(target_email, new_pw)
-        if not sent:
-            return False, msg
-            
-        # 3. 更新資料庫 (第2欄是密碼)
+        if not sent: return False, msg
         ws.update_cell(cell.row, 2, hash_password(new_pw))
-        
+        write_log("重置密碼", target_email, "忘記密碼重置")
         return True, "重置成功！新密碼已寄送到您的信箱。"
-        
-    except Exception as e:
-        return False, f"處理失敗: {str(e)}"
+    except Exception as e: return False, "重置失敗"
 
-# === 資料讀取 ===
 @st.cache_data(ttl=600)
 def load_data():
     client = get_client()
@@ -246,114 +227,217 @@ def clean_currency(val):
     except ValueError: return None
 
 # ==========================================
-#               主程式介面
+#  🧮 雙向計算邏輯 (Callback)
 # ==========================================
+def update_price_from_discount():
+    """當使用者輸入折數時，自動計算價格"""
+    base_price = st.session_state.selected_product['price']
+    discount = st.session_state.input_discount
+    # 價格 = 經銷價 * (折數 / 100)
+    new_price = base_price * (discount / 100)
+    st.session_state.input_price = round(new_price) # 取整數
 
-# --- 1. 登入畫面 ---
-if not st.session_state.logged_in:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.header("🔒 經銷牌價系統")
-        
-        tab1, tab2 = st.tabs(["會員登入", "忘記密碼"])
-        
-        with tab1:
-            with st.form("login_form"):
-                input_email = st.text_input("Email")
-                input_pass = st.text_input("密碼", type="password")
-                submitted = st.form_submit_button("登入", use_container_width=True)
-                
-                if submitted:
-                    success, result = login(input_email, input_pass)
-                    if success:
-                        st.session_state.logged_in = True
-                        st.session_state.user_email = input_email
-                        st.session_state.real_name = result
-                        st.rerun()
-                    else:
-                        st.error(result)
-        
-        with tab2:
-            st.caption("系統將發送新密碼至您的 Email")
-            with st.form("reset_form"):
-                reset_email = st.text_input("請輸入註冊 Email")
-                reset_submit = st.form_submit_button("發送重置信", use_container_width=True)
-                
-                if reset_submit:
-                    if reset_email:
-                        with st.spinner("處理中..."):
-                            success, msg = reset_password_flow(reset_email)
-                            if success:
-                                st.success(msg)
-                            else:
-                                st.error(msg)
-                    else:
-                        st.warning("請輸入 Email")
-    st.stop()
-
-# --- 2. 側邊欄 ---
-with st.sidebar:
-    st.write(f"👤 **{st.session_state.real_name}**")
-    
-    with st.expander("🔑 修改密碼"):
-        new_pwd = st.text_input("新密碼", type="password")
-        if st.button("確認修改"):
-            if new_pwd:
-                if change_password(st.session_state.user_email, new_pwd):
-                    st.success("密碼已更新！")
-                else:
-                    st.error("修改失敗")
-            else:
-                st.warning("密碼不能為空")
-    
-    st.markdown("---")
-    if st.button("登出", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.user_email = ""
-        st.session_state.real_name = ""
-        st.rerun()
-
-# --- 3. 主查詢介面 ---
-st.title("🔍 經銷牌價查詢系統")
-st.markdown("---")
-
-df = load_data()
-
-if not df.empty:
-    search_term = st.text_input("輸入關鍵字搜尋", "", placeholder="例如: FX5U / SDC / 馬達")
-    
-    display_df = df.copy()
-    if search_term:
-        valid_search = [c for c in SEARCH_COLS if c in display_df.columns]
-        mask = display_df[valid_search].apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
-        display_df = display_df[mask]
-
-    final_cols = [c for c in DISPLAY_COLS if c in display_df.columns]
-    
-    if not display_df.empty and final_cols:
-        final_df = display_df[final_cols].copy()
-        
-        for col in ['牌價', '經銷價']:
-            if col in final_df.columns:
-                final_df[col] = final_df[col].apply(clean_currency)
-
-        st.info(f"搜尋結果：共 {len(final_df)} 筆")
-
-        styler = final_df.style.format("{:,.0f}", subset=['牌價', '經銷價'], na_rep="")
-        styler = styler.set_properties(subset=['牌價', '經銷價'], **{'text-align': 'right'})
-        
-        if '訂購品(V)' in final_df.columns:
-            styler = styler.set_properties(subset=['訂購品(V)'], **{'text-align': 'center'})
-
-        st.dataframe(
-            styler,
-            use_container_width=True,
-            hide_index=True,
-            height=600
-        )
+def update_discount_from_price():
+    """當使用者輸入價格時，自動回推折數"""
+    base_price = st.session_state.selected_product['price']
+    price = st.session_state.input_price
+    if base_price > 0:
+        # 折數 = (價格 / 經銷價) * 100
+        new_discount = (price / base_price) * 100
+        st.session_state.input_discount = round(new_discount, 2) # 小數點兩位
     else:
+        st.session_state.input_discount = 0.0
+
+# ==========================================
+#               主程式
+# ==========================================
+def main_app():
+    # --- 1. 登入畫面 ---
+    if not st.session_state.logged_in:
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.header("🔒 士林電機FA 2026年經銷牌價查詢系統")
+            
+            if st.session_state.login_attempts >= 3:
+                st.error("⚠️ 登入失敗次數過多，請重新整理網頁後再試。")
+                return
+
+            tab1, tab2 = st.tabs(["會員登入", "忘記密碼"])
+            default_email = st.query_params.get("email", "")
+
+            with tab1:
+                with st.form("login_form"):
+                    input_email = st.text_input("Email", value=default_email)
+                    input_pass = st.text_input("密碼", type="password")
+                    submitted = st.form_submit_button("登入", use_container_width=True)
+                    if submitted:
+                        with st.spinner("正在驗證身分，請稍候..."):
+                            success, result = login(input_email, input_pass)
+                            if success:
+                                st.session_state.logged_in = True
+                                st.session_state.user_email = input_email
+                                st.session_state.real_name = result
+                                st.session_state.login_attempts = 0
+                                st.rerun()
+                            else:
+                                st.session_state.login_attempts += 1
+                                st.error(f"{result} (剩餘: {3 - st.session_state.login_attempts})")
+            with tab2:
+                st.caption("系統將發送新密碼至您的 Email")
+                with st.form("reset_form"):
+                    reset_email = st.text_input("請輸入註冊 Email", value=default_email)
+                    reset_submit = st.form_submit_button("發送重置信", use_container_width=True)
+                    if reset_submit:
+                        if reset_email:
+                            with st.spinner("系統處理中..."):
+                                success, msg = reset_password_flow(reset_email)
+                                if success: st.success(msg)
+                                else: st.error(msg)
+                        else: st.warning("請輸入 Email")
+        return
+
+    # --- 2. 側邊欄 (含計算機) ---
+    with st.sidebar:
+        greeting = get_greeting()
+        st.write(f"👤 **{st.session_state.real_name}**，{greeting}")
+        
+        # === 🧮 業務計算機 ===
+        st.markdown("---")
+        st.subheader("🧮 業務試算")
+
+        if st.session_state.selected_product:
+            p = st.session_state.selected_product
+            
+            # 使用 HTML 顯示產品資訊，比較漂亮
+            st.markdown(f"""
+            <div class="calc-box">
+                <div class="product-title">{p['spec']}</div>
+                <div class="price-tag">說明: {p['desc']}</div>
+                <div class="price-tag"><b>經銷價: ${p['price']:,.0f}</b></div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 雙向綁定輸入框
+            # 1. 販售折數 (%)
+            st.number_input(
+                "販售折數 (%)", 
+                min_value=0.0, 
+                max_value=200.0, 
+                step=1.0, 
+                key="input_discount",
+                on_change=update_price_from_discount # 當輸入改變時，觸發計算
+            )
+            
+            # 2. 販售價格 ($)
+            st.number_input(
+                "販售價格 ($)", 
+                min_value=0.0, 
+                step=100.0, 
+                key="input_price",
+                on_change=update_discount_from_price # 當輸入改變時，觸發計算
+            )
+            
+            st.caption("💡 提示：輸入任一欄位，系統會自動換算另一欄。")
+            
+        else:
+            st.info("👈 請在右側搜尋產品後，點擊「試算」按鈕，即可在此計算報價。")
+
+        # 原本的功能區
+        st.markdown("---")
+        with st.expander("🔑 修改密碼"):
+            new_pwd = st.text_input("新密碼", type="password")
+            if st.button("確認修改"):
+                if new_pwd:
+                    if change_password(st.session_state.user_email, new_pwd):
+                        st.success("密碼已更新！")
+                    else: st.error("修改失敗")
+                else: st.warning("密碼不能為空")
+        
+        if st.button("登出", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.selected_product = None # 登出清空選擇
+            st.rerun()
+
+    # --- 3. 主查詢介面 ---
+    st.title("🔍 士林電機FA 2026年經銷牌價查詢系統")
+    update_date = get_update_date()
+    if update_date: st.caption(f"📅 資料庫最後更新：{update_date}")
+    st.markdown("---")
+
+    df = load_data()
+
+    if not df.empty:
+        search_term = st.text_input("輸入關鍵字搜尋", "", placeholder="例如: FX5U / SDC / 馬達")
+        
+        display_df = df.copy()
         if search_term:
-            st.warning("查無資料")
-else:
-    st.error("無法讀取資料庫，請確認 Google Sheet 連線正常。")
+            valid_search = [c for c in SEARCH_COLS if c in display_df.columns]
+            mask = display_df[valid_search].apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
+            display_df = display_df[mask]
+
+        final_cols = [c for c in DISPLAY_COLS if c in display_df.columns]
+        
+        if not display_df.empty and final_cols:
+            # 整理資料，把錢變成 float 以便計算
+            final_df = display_df[final_cols].copy()
+            for col in ['牌價', '經銷價']:
+                if col in final_df.columns:
+                    final_df[col] = final_df[col].apply(clean_currency)
+
+            st.info(f"搜尋結果：共 {len(final_df)} 筆 (點擊左側「試算」按鈕可進行報價)")
+            
+            # === 自定義表格顯示 (加入按鈕) ===
+            # 因為 Streamlit 原生表格不能放按鈕，我們改用 columns 迴圈渲染每一行
+            
+            # 1. 顯示標題列
+            cols = st.columns([1, 2, 1.5, 1.5, 2, 1])
+            fields = ["操作", "規格", "牌價", "經銷價", "說明", "訂購"]
+            for col, field in zip(cols, fields):
+                col.markdown(f"**{field}**")
+            st.markdown("---")
+
+            # 2. 顯示資料列
+            for index, row in final_df.iterrows():
+                # 處理顯示格式 (NaN 轉空字串，數字加逗號)
+                spec = str(row['規格']) if pd.notna(row['規格']) else ""
+                list_price = f"{row['牌價']:,.0f}" if pd.notna(row['牌價']) else ""
+                dist_price_val = row['經銷價'] if pd.notna(row['經銷價']) else 0
+                dist_price_str = f"{dist_price_val:,.0f}" if dist_price_val else ""
+                desc = str(row['說明']) if pd.notna(row['說明']) else ""
+                order_mark = str(row['訂購品(V)']) if pd.notna(row['訂購品(V)']) else ""
+
+                c1, c2, c3, c4, c5, c6 = st.columns([1, 2, 1.5, 1.5, 2, 1])
+                
+                # 按鈕區 (C1)
+                if c1.button("試算", key=f"btn_{index}"):
+                    # 當按鈕被按下，更新 Session State
+                    st.session_state.selected_product = {
+                        'spec': spec,
+                        'desc': desc,
+                        'price': dist_price_val
+                    }
+                    # 預設折數 100% (原價)
+                    st.session_state.input_discount = 100.0
+                    st.session_state.input_price = float(dist_price_val)
+                    # 重新整理頁面以更新側邊欄
+                    st.rerun()
+
+                # 資料區
+                c2.write(spec)
+                c3.write(list_price) # 靠右在 columns 比較難，先直接顯示
+                c4.write(dist_price_str)
+                c5.write(desc)
+                c6.write(order_mark)
+                st.markdown("<div style='margin: -15px 0px;'></div><hr style='margin: 5px 0px;'>", unsafe_allow_html=True) # 縮小行距的分隔線
+
+        else:
+            if search_term: st.warning("查無資料")
+    else:
+        st.error("資料庫連線異常，請稍後再試。")
+
+if __name__ == "__main__":
+    try:
+        main_app()
+    except Exception as e:
+        st.error("系統暫時忙碌中，請重新整理或聯繫管理員。")
