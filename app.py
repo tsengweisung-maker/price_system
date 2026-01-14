@@ -12,17 +12,32 @@ import string
 import time
 from datetime import datetime, timezone, timedelta
 
-# === 1. 頁面設定 ===
-st.set_page_config(page_title="士電牌價查詢系統", layout="wide")
+# === 1. 頁面設定 (新增：強制預設展開側邊欄) ===
+st.set_page_config(
+    page_title="士電牌價查詢系統", 
+    layout="wide",
+    initial_sidebar_state="expanded"  # <-- 強制展開，避免預設縮起
+)
 
-# === CSS: 介面優化 ===
+# === CSS: 介面優化 (修正：找回側邊欄開關按鈕) ===
 st.markdown("""
 <style>
-/* 隱藏預設選單與頁尾 */
+/* 1. 隱藏右上角漢堡選單 (三個點點) */
 #MainMenu {visibility: hidden;}
+
+/* 2. 隱藏頁尾 "Made with Streamlit" */
 footer {visibility: hidden;}
-header {visibility: hidden;}
+
+/* 3. [修正] 必須顯示 header，否則左上角的「展開側邊欄」箭頭會消失 */
+header {visibility: visible !important;}
+
+/* 4. 但我們可以把 header 裡面的彩虹裝飾條隱藏，保持簡潔 */
+[data-testid="stDecoration"] {display: none;}
+
+/* 5. 隱藏表格的工具列 */
 [data-testid="stElementToolbar"] { display: none; }
+
+/* 6. 隱藏右下角開發者按鈕 */
 .stAppDeployButton {display: none;}
 [data-testid="stManageAppButton"] {display: none;}
 
@@ -66,7 +81,6 @@ else:
 
 GOOGLE_SHEET_NAME = '經銷牌價表_資料庫'
 SEARCH_COLS = ['NO.', '規格', '說明']
-# 為了讓使用者選取，我們需要在 DataFrame 裡識別每一行，這裡用 Index
 DISPLAY_COLS = ['規格', '牌價', '經銷價', '說明', '訂購品(V)']
 
 # === Session State 初始化 ===
@@ -79,9 +93,9 @@ if 'real_name' not in st.session_state:
 if 'login_attempts' not in st.session_state:
     st.session_state.login_attempts = 0
 
-# === [新增] 計算機相關 State ===
+# === 計算機相關 State ===
 if 'selected_product' not in st.session_state:
-    st.session_state.selected_product = None # 存 {規格:..., 經銷價:...}
+    st.session_state.selected_product = None 
 if 'input_discount' not in st.session_state:
     st.session_state.input_discount = 0.0
 if 'input_price' not in st.session_state:
@@ -227,24 +241,20 @@ def clean_currency(val):
     except ValueError: return None
 
 # ==========================================
-#  🧮 雙向計算邏輯 (Callback)
+#  🧮 雙向計算邏輯
 # ==========================================
 def update_price_from_discount():
-    """當使用者輸入折數時，自動計算價格"""
     base_price = st.session_state.selected_product['price']
     discount = st.session_state.input_discount
-    # 價格 = 經銷價 * (折數 / 100)
     new_price = base_price * (discount / 100)
-    st.session_state.input_price = round(new_price) # 取整數
+    st.session_state.input_price = round(new_price)
 
 def update_discount_from_price():
-    """當使用者輸入價格時，自動回推折數"""
     base_price = st.session_state.selected_product['price']
     price = st.session_state.input_price
     if base_price > 0:
-        # 折數 = (價格 / 經銷價) * 100
         new_discount = (price / base_price) * 100
-        st.session_state.input_discount = round(new_discount, 2) # 小數點兩位
+        st.session_state.input_discount = round(new_discount, 2)
     else:
         st.session_state.input_discount = 0.0
 
@@ -308,8 +318,6 @@ def main_app():
 
         if st.session_state.selected_product:
             p = st.session_state.selected_product
-            
-            # 使用 HTML 顯示產品資訊，比較漂亮
             st.markdown(f"""
             <div class="calc-box">
                 <div class="product-title">{p['spec']}</div>
@@ -318,26 +326,16 @@ def main_app():
             </div>
             """, unsafe_allow_html=True)
             
-            # 雙向綁定輸入框
-            # 1. 販售折數 (%)
             st.number_input(
                 "販售折數 (%)", 
-                min_value=0.0, 
-                max_value=200.0, 
-                step=1.0, 
-                key="input_discount",
-                on_change=update_price_from_discount # 當輸入改變時，觸發計算
+                min_value=0.0, max_value=200.0, step=1.0, 
+                key="input_discount", on_change=update_price_from_discount
             )
-            
-            # 2. 販售價格 ($)
             st.number_input(
                 "販售價格 ($)", 
-                min_value=0.0, 
-                step=100.0, 
-                key="input_price",
-                on_change=update_discount_from_price # 當輸入改變時，觸發計算
+                min_value=0.0, step=100.0, 
+                key="input_price", on_change=update_discount_from_price
             )
-            
             st.caption("💡 提示：輸入任一欄位，系統會自動換算另一欄。")
             
         else:
@@ -356,7 +354,7 @@ def main_app():
         
         if st.button("登出", use_container_width=True):
             st.session_state.logged_in = False
-            st.session_state.selected_product = None # 登出清空選擇
+            st.session_state.selected_product = None
             st.rerun()
 
     # --- 3. 主查詢介面 ---
@@ -379,7 +377,6 @@ def main_app():
         final_cols = [c for c in DISPLAY_COLS if c in display_df.columns]
         
         if not display_df.empty and final_cols:
-            # 整理資料，把錢變成 float 以便計算
             final_df = display_df[final_cols].copy()
             for col in ['牌價', '經銷價']:
                 if col in final_df.columns:
@@ -388,18 +385,13 @@ def main_app():
             st.info(f"搜尋結果：共 {len(final_df)} 筆 (點擊左側「試算」按鈕可進行報價)")
             
             # === 自定義表格顯示 (加入按鈕) ===
-            # 因為 Streamlit 原生表格不能放按鈕，我們改用 columns 迴圈渲染每一行
-            
-            # 1. 顯示標題列
             cols = st.columns([1, 2, 1.5, 1.5, 2, 1])
             fields = ["操作", "規格", "牌價", "經銷價", "說明", "訂購"]
             for col, field in zip(cols, fields):
                 col.markdown(f"**{field}**")
             st.markdown("---")
 
-            # 2. 顯示資料列
             for index, row in final_df.iterrows():
-                # 處理顯示格式 (NaN 轉空字串，數字加逗號)
                 spec = str(row['規格']) if pd.notna(row['規格']) else ""
                 list_price = f"{row['牌價']:,.0f}" if pd.notna(row['牌價']) else ""
                 dist_price_val = row['經銷價'] if pd.notna(row['經銷價']) else 0
@@ -409,27 +401,22 @@ def main_app():
 
                 c1, c2, c3, c4, c5, c6 = st.columns([1, 2, 1.5, 1.5, 2, 1])
                 
-                # 按鈕區 (C1)
                 if c1.button("試算", key=f"btn_{index}"):
-                    # 當按鈕被按下，更新 Session State
                     st.session_state.selected_product = {
                         'spec': spec,
                         'desc': desc,
                         'price': dist_price_val
                     }
-                    # 預設折數 100% (原價)
                     st.session_state.input_discount = 100.0
                     st.session_state.input_price = float(dist_price_val)
-                    # 重新整理頁面以更新側邊欄
                     st.rerun()
 
-                # 資料區
                 c2.write(spec)
-                c3.write(list_price) # 靠右在 columns 比較難，先直接顯示
+                c3.write(list_price)
                 c4.write(dist_price_str)
                 c5.write(desc)
                 c6.write(order_mark)
-                st.markdown("<div style='margin: -15px 0px;'></div><hr style='margin: 5px 0px;'>", unsafe_allow_html=True) # 縮小行距的分隔線
+                st.markdown("<div style='margin: -15px 0px;'></div><hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
 
         else:
             if search_term: st.warning("查無資料")
