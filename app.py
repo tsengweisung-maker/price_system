@@ -16,13 +16,32 @@ from datetime import datetime, timezone, timedelta
 st.set_page_config(
     page_title="士電牌價查詢系統", 
     layout="wide",
-    initial_sidebar_state="collapsed" # 手機版預設收起側邊欄，因為我們改用彈出視窗了
+    initial_sidebar_state="collapsed"
 )
 
-# === CSS: 手機優先 (Mobile First) 介面設計 ===
+# === CSS: 賈伯斯風格 (強制亮色模式 + 字體統一) ===
 st.markdown("""
 <style>
-/* 隱藏雜訊 */
+/* --- 核心修正 1：強制覆寫深色模式 (Force Light Theme) --- */
+/* 強制將主背景設為 蘋果灰 */
+[data-testid="stAppViewContainer"] {
+    background-color: #f5f5f7 !important;
+}
+/* 強制將側邊欄背景設為 純白 */
+[data-testid="stSidebar"] {
+    background-color: #ffffff !important;
+}
+/* 強制所有全域文字顏色為 深灰 (避免被手機深色模式反白) */
+h1, h2, h3, p, div, span, label {
+    color: #1d1d1f !important;
+}
+/* 修正輸入框在深色模式下的顯示 */
+input {
+    color: #1d1d1f !important;
+    background-color: #ffffff !important;
+}
+
+/* 隱藏 Streamlit 預設雜訊 */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: visible !important;}
@@ -31,51 +50,63 @@ header {visibility: visible !important;}
 .stAppDeployButton {display: none;}
 [data-testid="stManageAppButton"] {display: none;}
 
-/* 全域字體優化 */
-html, body, [class*="css"] {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+/* --- 核心修正 2：統一字體大小 (Typography) --- */
+/* 定義統一的字體大小變數 */
+:root {
+    --card-font-size: 1.15rem; /* 約 18px，手機閱讀舒適的大小 */
 }
 
-/* 📱 卡片設計 (Card UI) - 更像原生 App */
+/* 卡片容器設計 */
 div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
-    border: 1px solid #f0f0f0;
-    border-radius: 16px; /* 更圓潤 */
-    padding: 16px;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.04); /* 輕微浮起感 */
-    background-color: white;
-    margin-bottom: 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 18px;
+    padding: 20px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    background-color: #ffffff !important; /* 強制卡片白色 */
+    margin-bottom: 16px;
 }
 
-/* 規格標題 */
+/* 規格 (加粗，但大小統一) */
 .card-spec {
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: #1a1a1a;
-    margin-bottom: 4px;
-}
-
-/* 價格標籤 */
-.card-price {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #0066cc; /* 科技藍 */
-}
-
-/* 說明文字 */
-.card-desc {
-    font-size: 0.9rem;
-    color: #888;
-    margin-top: 4px;
+    font-size: var(--card-font-size);
+    font-weight: 700; /* Bold */
+    color: #000000 !important;
+    margin-bottom: 8px;
     line-height: 1.4;
 }
 
+/* 價格 (加粗，藍色，大小統一) */
+.card-price {
+    font-size: var(--card-font-size);
+    font-weight: 600; /* Semi-Bold */
+    color: #0071e3 !important; /* Apple Blue */
+    margin-bottom: 8px;
+}
+
+/* 說明 (一般粗細，大小統一) */
+.card-desc {
+    font-size: var(--card-font-size);
+    font-weight: 400; /* Regular */
+    color: #86868b !important; /* Apple Gray */
+    line-height: 1.5;
+}
+
 /* 彈出視窗內的文字優化 */
-.dialog-price {
+.dialog-text {
+    font-size: 1.15rem;
+    color: #1d1d1f !important;
+    margin-bottom: 10px;
+    line-height: 1.6;
+}
+.dialog-price-highlight {
     font-size: 1.5rem;
-    font-weight: bold;
-    color: #2c3e50;
+    font-weight: 700;
+    color: #0071e3 !important;
     text-align: center;
-    margin: 10px 0;
+    margin-top: 20px;
+    padding: 15px;
+    background-color: #f5f5f7;
+    border-radius: 12px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -98,7 +129,6 @@ if 'user_email' not in st.session_state: st.session_state.user_email = ""
 if 'real_name' not in st.session_state: st.session_state.real_name = ""
 if 'login_attempts' not in st.session_state: st.session_state.login_attempts = 0
 
-# 計算機變數 (全域)
 if 'calc_discount' not in st.session_state: st.session_state.calc_discount = 100.00
 if 'calc_price' not in st.session_state: st.session_state.calc_price = 0
 if 'current_base_price' not in st.session_state: st.session_state.current_base_price = 0
@@ -238,22 +268,22 @@ def clean_currency(val):
     except ValueError: return None
 
 # ==========================================
-#  🔥 彈出式計算機 (Dialog) - 這是新功能的靈魂
+#  🔥 彈出式計算機
 # ==========================================
 @st.dialog("🧮 業務報價試算")
 def show_calculator_dialog(spec, desc, base_price):
-    st.markdown(f"### {spec}")
-    st.caption(f"說明: {desc}")
-    st.markdown(f"**經銷底價: ${base_price:,.0f}**")
+    # [修正] 標題、說明、價格 -> 統一使用 dialog-text 樣式，大小一致
+    st.markdown(f'<div class="dialog-text"><b>產品規格：</b>{spec}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="dialog-text"><b>產品說明：</b>{desc}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="dialog-text"><b>經銷底價：</b>${base_price:,.0f}</div>', unsafe_allow_html=True)
+    
     st.markdown("---")
 
-    # 初始化 State (如果是第一次打開這個視窗)
     if st.session_state.current_base_price != base_price:
         st.session_state.current_base_price = base_price
         st.session_state.calc_discount = 100.00
         st.session_state.calc_price = int(base_price)
 
-    # 定義計算邏輯
     def on_discount_change():
         new_price = st.session_state.current_base_price * (st.session_state.calc_discount / 100)
         st.session_state.calc_price = int(round(new_price))
@@ -263,13 +293,12 @@ def show_calculator_dialog(spec, desc, base_price):
             new_discount = (st.session_state.calc_price / st.session_state.current_base_price) * 100
             st.session_state.calc_discount = round(new_discount, 2)
     
-    # 兩欄排版
     col1, col2 = st.columns(2)
     with col1:
         st.number_input(
             "販售折數 (%)",
             min_value=0.0, max_value=300.0, step=0.5,
-            format="%.2f", # 小數點兩位
+            format="%.2f",
             key="calc_discount",
             on_change=on_discount_change
         )
@@ -277,21 +306,19 @@ def show_calculator_dialog(spec, desc, base_price):
         st.number_input(
             "販售價格 ($)",
             min_value=0, step=100,
-            format="%d", # 整數
+            format="%d",
             key="calc_price",
             on_change=on_price_change
         )
     
-    # 醒目的結果顯示
     final_p = st.session_state.calc_price
-    st.markdown(f"<div class='dialog-price'>報價金額：${final_p:,.0f}</div>", unsafe_allow_html=True)
-    st.info("💡 調整上方任一欄位，系統會自動換算。點擊視窗外灰色區域即可關閉。")
+    st.markdown(f"<div class='dialog-price-highlight'>報價金額：${final_p:,.0f}</div>", unsafe_allow_html=True)
+    st.info("💡 調整上方任一欄位，系統會自動換算。")
 
 # ==========================================
 #               主程式
 # ==========================================
 def main_app():
-    # --- 1. 登入畫面 ---
     if not st.session_state.logged_in:
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
@@ -336,7 +363,7 @@ def main_app():
                         else: st.warning("請輸入 Email")
         return
 
-    # --- 2. 側邊欄 (只保留功能選單，移除計算機以免混淆) ---
+    # --- 側邊欄 ---
     with st.sidebar:
         greeting = get_greeting()
         st.write(f"👤 **{st.session_state.real_name}**，{greeting}")
@@ -352,7 +379,7 @@ def main_app():
             st.session_state.logged_in = False
             st.rerun()
 
-    # --- 3. 主查詢介面 ---
+    # --- 主查詢介面 ---
     st.title("🔍 士林電機FA 2026年經銷牌價")
     update_date = get_update_date()
     if update_date: st.caption(f"📅 資料庫最後更新：{update_date}")
@@ -387,7 +414,6 @@ def main_app():
             else:
                 st.success(f"搜尋結果：共 {result_count} 筆")
                 
-                # 卡片式渲染
                 for index, row in final_df.iterrows():
                     spec = str(row['規格']) if pd.notna(row['規格']) else ""
                     dist_price_val = row['經銷價']
@@ -399,29 +425,26 @@ def main_app():
                         price_display = f"${dist_price_val:,.0f}"
 
                     desc = str(row['說明']) if pd.notna(row['說明']) else ""
-                    order_mark = "📦 訂購品" if str(row.get('訂購品(V)', '')).strip() == 'V' else ""
+                    order_mark = "📦" if str(row.get('訂購品(V)', '')).strip() == 'V' else ""
 
-                    # 這裡就是卡片容器
                     with st.container():
-                        c_info, c_btn = st.columns([3, 1.2]) # 調整比例讓按鈕更大
+                        c_info, c_btn = st.columns([3, 1.2]) 
                         
                         with c_info:
                             st.markdown(f'<div class="card-spec">{spec}</div>', unsafe_allow_html=True)
-                            st.markdown(f'<div class="card-price">{price_display} <span style="font-size:0.8rem;color:#999;font-weight:normal;">(經銷價)</span> {order_mark}</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="card-price">{price_display} <span style="font-size:0.9rem;color:#86868b;font-weight:400;">(經銷價)</span> {order_mark}</div>', unsafe_allow_html=True)
                             if desc:
                                 st.markdown(f'<div class="card-desc">{desc}</div>', unsafe_allow_html=True)
                         
                         with c_btn:
-                            st.write("") # 為了排版
+                            st.write("") 
                             if dist_price_val is not None:
                                 if st.button("試算", key=f"btn_{index}", use_container_width=True):
-                                    # 🔥 這裡觸發彈出視窗
                                     show_calculator_dialog(spec, desc, float(dist_price_val))
                             else:
                                 st.button("試算", key=f"btn_{index}", disabled=True, use_container_width=True)
                         
                         st.markdown("---") 
-
         else:
             if search_term: st.warning("查無資料")
     else:
