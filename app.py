@@ -242,6 +242,21 @@ def update_discount_from_price():
         else:
             st.session_state.input_discount = 0.0
 
+# === [新增] 按鈕點擊的回調函式 (解決紅字錯誤的關鍵) ===
+def select_product_callback(spec, desc, price):
+    """
+    這個函式會在按鈕被按下的「瞬間」執行，
+    比側邊欄重畫還要早，所以不會有衝突。
+    """
+    st.session_state.selected_product = {
+        'spec': spec,
+        'desc': desc,
+        'price': price
+    }
+    # 在這裡設定初始值是安全的
+    st.session_state.input_discount = 100.0
+    st.session_state.input_price = price
+
 # ==========================================
 #               主程式
 # ==========================================
@@ -301,7 +316,6 @@ def main_app():
 
         if st.session_state.selected_product:
             p = st.session_state.selected_product
-            # 防呆：如果價格為 0 或 None，顯示提示
             if not p['price']:
                 st.warning("⚠️ 此商品無經銷價，無法試算。")
             else:
@@ -393,15 +407,13 @@ def main_app():
                     c1, c2, c3, c4, c5, c6 = st.columns([1, 2, 1.5, 1.5, 2, 1])
                     
                     if dist_price_val is not None:
-                        if c1.button("試算", key=f"btn_{index}"):
-                            st.session_state.selected_product = {
-                                'spec': spec,
-                                'desc': desc,
-                                'price': float(dist_price_val)
-                            }
-                            st.session_state.input_discount = 100.0
-                            st.session_state.input_price = float(dist_price_val)
-                            st.rerun()
+                        # === 這裡改用了 Callback，完美解決衝突 ===
+                        c1.button(
+                            "試算", 
+                            key=f"btn_{index}",
+                            on_click=select_product_callback,
+                            args=(spec, desc, float(dist_price_val))
+                        )
                     else:
                         c1.button("試算", key=f"btn_{index}", disabled=True)
 
@@ -416,6 +428,5 @@ def main_app():
     else:
         st.error("資料庫連線異常，請稍後再試。")
 
-# === 移除全域防護罩 (讓 rerun 正常運作) ===
 if __name__ == "__main__":
     main_app()
