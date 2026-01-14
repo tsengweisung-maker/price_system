@@ -12,17 +12,17 @@ import string
 import time
 from datetime import datetime, timezone, timedelta
 
-# === 1. 頁面設定 (手機優化基礎) ===
+# === 1. 頁面設定 ===
 st.set_page_config(
     page_title="士電牌價查詢系統", 
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed" # 手機版預設收起側邊欄，因為我們改用彈出視窗了
 )
 
-# === CSS: 賈伯斯風格介面優化 ===
+# === CSS: 手機優先 (Mobile First) 介面設計 ===
 st.markdown("""
 <style>
-/* 隱藏不必要的元素 */
+/* 隱藏雜訊 */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: visible !important;}
@@ -31,52 +31,51 @@ header {visibility: visible !important;}
 .stAppDeployButton {display: none;}
 [data-testid="stManageAppButton"] {display: none;}
 
-/* 全域字體優化 (更適合閱讀) */
+/* 全域字體優化 */
 html, body, [class*="css"] {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* 📱 手機版卡片設計 (Card UI) */
+/* 📱 卡片設計 (Card UI) - 更像原生 App */
 div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
-    border: 1px solid #e0e0e0;
-    border-radius: 12px;
-    padding: 15px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    border: 1px solid #f0f0f0;
+    border-radius: 16px; /* 更圓潤 */
+    padding: 16px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.04); /* 輕微浮起感 */
     background-color: white;
-    margin-bottom: 10px;
-    transition: transform 0.2s;
+    margin-bottom: 12px;
 }
 
-/* 規格標題 (大字體) */
+/* 規格標題 */
 .card-spec {
-    font-size: 1.3rem;
+    font-size: 1.25rem;
     font-weight: 700;
-    color: #1f1f1f;
-    margin-bottom: 5px;
+    color: #1a1a1a;
+    margin-bottom: 4px;
 }
 
-/* 價格標籤 (強調) */
+/* 價格標籤 */
 .card-price {
     font-size: 1.1rem;
     font-weight: 600;
-    color: #0068c9; /* 士電藍 */
+    color: #0066cc; /* 科技藍 */
 }
 
-/* 說明文字 (次要資訊) */
+/* 說明文字 */
 .card-desc {
     font-size: 0.9rem;
-    color: #666;
-    margin-top: 5px;
+    color: #888;
+    margin-top: 4px;
     line-height: 1.4;
 }
 
-/* 側邊欄計算機美化 */
-.calc-box {
-    background-color: #f8f9fa;
-    padding: 16px;
-    border-radius: 12px;
-    border: 1px solid #dee2e6;
-    margin-bottom: 20px;
+/* 彈出視窗內的文字優化 */
+.dialog-price {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #2c3e50;
+    text-align: center;
+    margin: 10px 0;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -92,8 +91,6 @@ else:
     SMTP_PASSWORD = ""
 
 GOOGLE_SHEET_NAME = '經銷牌價表_資料庫'
-SEARCH_COLS = ['NO.', '規格', '說明']
-# 這裡不需要 DISPLAY_COLS 了，因為我們用卡片顯示
 
 # === Session State 初始化 ===
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -101,9 +98,10 @@ if 'user_email' not in st.session_state: st.session_state.user_email = ""
 if 'real_name' not in st.session_state: st.session_state.real_name = ""
 if 'login_attempts' not in st.session_state: st.session_state.login_attempts = 0
 
-if 'selected_product' not in st.session_state: st.session_state.selected_product = None 
-if 'input_discount' not in st.session_state: st.session_state.input_discount = 0.0
-if 'input_price' not in st.session_state: st.session_state.input_price = 0
+# 計算機變數 (全域)
+if 'calc_discount' not in st.session_state: st.session_state.calc_discount = 100.00
+if 'calc_price' not in st.session_state: st.session_state.calc_price = 0
+if 'current_base_price' not in st.session_state: st.session_state.current_base_price = 0
 
 # === 連線與工具函式 ===
 def get_client():
@@ -240,36 +238,54 @@ def clean_currency(val):
     except ValueError: return None
 
 # ==========================================
-#  🧮 雙向計算邏輯 (修正：整數與小數位)
+#  🔥 彈出式計算機 (Dialog) - 這是新功能的靈魂
 # ==========================================
-def update_price_from_discount():
-    if st.session_state.selected_product and st.session_state.selected_product['price']:
-        base_price = st.session_state.selected_product['price']
-        discount = st.session_state.input_discount
-        new_price = base_price * (discount / 100)
-        # [修改] 價格強制轉為整數 (int)
-        st.session_state.input_price = int(round(new_price))
+@st.dialog("🧮 業務報價試算")
+def show_calculator_dialog(spec, desc, base_price):
+    st.markdown(f"### {spec}")
+    st.caption(f"說明: {desc}")
+    st.markdown(f"**經銷底價: ${base_price:,.0f}**")
+    st.markdown("---")
 
-def update_discount_from_price():
-    if st.session_state.selected_product and st.session_state.selected_product['price']:
-        base_price = st.session_state.selected_product['price']
-        price = st.session_state.input_price
-        if base_price > 0:
-            new_discount = (price / base_price) * 100
-            # [修改] 折數保留兩位小數
-            st.session_state.input_discount = round(new_discount, 2)
-        else:
-            st.session_state.input_discount = 0.0
+    # 初始化 State (如果是第一次打開這個視窗)
+    if st.session_state.current_base_price != base_price:
+        st.session_state.current_base_price = base_price
+        st.session_state.calc_discount = 100.00
+        st.session_state.calc_price = int(base_price)
 
-# [關鍵] 按鈕回調函式
-def select_product_callback(spec, desc, price):
-    st.session_state.selected_product = {
-        'spec': spec,
-        'desc': desc,
-        'price': price
-    }
-    st.session_state.input_discount = 100.00
-    st.session_state.input_price = int(price) # 初始值也是整數
+    # 定義計算邏輯
+    def on_discount_change():
+        new_price = st.session_state.current_base_price * (st.session_state.calc_discount / 100)
+        st.session_state.calc_price = int(round(new_price))
+
+    def on_price_change():
+        if st.session_state.current_base_price > 0:
+            new_discount = (st.session_state.calc_price / st.session_state.current_base_price) * 100
+            st.session_state.calc_discount = round(new_discount, 2)
+    
+    # 兩欄排版
+    col1, col2 = st.columns(2)
+    with col1:
+        st.number_input(
+            "販售折數 (%)",
+            min_value=0.0, max_value=300.0, step=0.5,
+            format="%.2f", # 小數點兩位
+            key="calc_discount",
+            on_change=on_discount_change
+        )
+    with col2:
+        st.number_input(
+            "販售價格 ($)",
+            min_value=0, step=100,
+            format="%d", # 整數
+            key="calc_price",
+            on_change=on_price_change
+        )
+    
+    # 醒目的結果顯示
+    final_p = st.session_state.calc_price
+    st.markdown(f"<div class='dialog-price'>報價金額：${final_p:,.0f}</div>", unsafe_allow_html=True)
+    st.info("💡 調整上方任一欄位，系統會自動換算。點擊視窗外灰色區域即可關閉。")
 
 # ==========================================
 #               主程式
@@ -280,7 +296,7 @@ def main_app():
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("<br><br>", unsafe_allow_html=True)
-            st.header("🔒 士林電機FA 2026年經銷牌價查詢系統")
+            st.header("🔒 士林電機FA 2026年經銷牌價")
             
             if st.session_state.login_attempts >= 3:
                 st.error("⚠️ 登入失敗次數過多，請重新整理網頁後再試。")
@@ -320,47 +336,10 @@ def main_app():
                         else: st.warning("請輸入 Email")
         return
 
-    # --- 2. 側邊欄 ---
+    # --- 2. 側邊欄 (只保留功能選單，移除計算機以免混淆) ---
     with st.sidebar:
         greeting = get_greeting()
         st.write(f"👤 **{st.session_state.real_name}**，{greeting}")
-        
-        st.markdown("---")
-        st.subheader("🧮 業務試算")
-
-        if st.session_state.selected_product:
-            p = st.session_state.selected_product
-            if not p['price']:
-                st.warning("⚠️ 此商品無經銷價")
-            else:
-                st.markdown(f"""
-                <div class="calc-box">
-                    <div class="product-title">{p['spec']}</div>
-                    <div class="card-desc">{p['desc']}</div>
-                    <div class="card-price" style="margin-top:10px;">經銷價: ${p['price']:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # [修改] 格式化輸入框
-                st.number_input(
-                    "販售折數 (%)", 
-                    min_value=0.0, max_value=200.0, step=0.5, 
-                    format="%.2f", # <-- 強制兩位小數
-                    key="input_discount", 
-                    on_change=update_price_from_discount
-                )
-                
-                st.number_input(
-                    "販售價格 ($)", 
-                    min_value=0, step=100, 
-                    format="%d", # <-- 強制整數 (無小數點)
-                    key="input_price", 
-                    on_change=update_discount_from_price
-                )
-                st.caption("💡 雙向自動換算 (價格已取整)")
-        else:
-            st.info("👈 請在右側點擊產品「試算」按鈕")
-
         st.markdown("---")
         with st.expander("🔑 修改密碼"):
             new_pwd = st.text_input("新密碼", type="password")
@@ -371,10 +350,9 @@ def main_app():
         
         if st.button("登出", use_container_width=True):
             st.session_state.logged_in = False
-            st.session_state.selected_product = None
             st.rerun()
 
-    # --- 3. 主查詢介面 (手機版大改版) ---
+    # --- 3. 主查詢介面 ---
     st.title("🔍 士林電機FA 2026年經銷牌價")
     update_date = get_update_date()
     if update_date: st.caption(f"📅 資料庫最後更新：{update_date}")
@@ -391,7 +369,6 @@ def main_app():
             mask = display_df[valid_search].apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
             display_df = display_df[mask]
 
-        # 這裡我們只抓需要的欄位
         final_cols = ['規格', '牌價', '經銷價', '說明', '訂購品(V)']
         final_cols = [c for c in final_cols if c in display_df.columns]
         
@@ -403,15 +380,14 @@ def main_app():
 
             result_count = len(final_df)
             
-            # === 📱 賈伯斯模式：自動卡片排列 ===
+            # === 手機版智慧顯示 ===
             if result_count > 50:
-                st.info(f"搜尋結果：共 {result_count} 筆 (請縮小範圍至 50 筆以內以顯示卡片)")
-                # 超過 50 筆還是用表格，避免手機滑到死
+                st.info(f"搜尋結果：共 {result_count} 筆 (請縮小範圍至 50 筆以內以使用試算功能)")
                 st.dataframe(final_df, use_container_width=True, hide_index=True)
             else:
                 st.success(f"搜尋結果：共 {result_count} 筆")
                 
-                # 遍歷每一筆資料，畫出卡片
+                # 卡片式渲染
                 for index, row in final_df.iterrows():
                     spec = str(row['規格']) if pd.notna(row['規格']) else ""
                     dist_price_val = row['經銷價']
@@ -425,35 +401,26 @@ def main_app():
                     desc = str(row['說明']) if pd.notna(row['說明']) else ""
                     order_mark = "📦 訂購品" if str(row.get('訂購品(V)', '')).strip() == 'V' else ""
 
-                    # === 這是「卡片」容器 ===
+                    # 這裡就是卡片容器
                     with st.container():
-                        # 使用 columns 做佈局：左邊是資訊，右邊是按鈕
-                        c_info, c_btn = st.columns([3, 1])
+                        c_info, c_btn = st.columns([3, 1.2]) # 調整比例讓按鈕更大
                         
                         with c_info:
-                            # 產品規格 (標題)
                             st.markdown(f'<div class="card-spec">{spec}</div>', unsafe_allow_html=True)
-                            # 價格與標記
                             st.markdown(f'<div class="card-price">{price_display} <span style="font-size:0.8rem;color:#999;font-weight:normal;">(經銷價)</span> {order_mark}</div>', unsafe_allow_html=True)
-                            # 說明
                             if desc:
                                 st.markdown(f'<div class="card-desc">{desc}</div>', unsafe_allow_html=True)
                         
                         with c_btn:
-                            # 垂直置中按鈕有點難，我們用空行來推
-                            st.write("") 
+                            st.write("") # 為了排版
                             if dist_price_val is not None:
-                                c_btn.button(
-                                    "試算", 
-                                    key=f"btn_{index}",
-                                    use_container_width=True, # 按鈕填滿寬度，手指好按
-                                    on_click=select_product_callback,
-                                    args=(spec, desc, float(dist_price_val))
-                                )
+                                if st.button("試算", key=f"btn_{index}", use_container_width=True):
+                                    # 🔥 這裡觸發彈出視窗
+                                    show_calculator_dialog(spec, desc, float(dist_price_val))
                             else:
-                                c_btn.button("試算", key=f"btn_{index}", disabled=True, use_container_width=True)
+                                st.button("試算", key=f"btn_{index}", disabled=True, use_container_width=True)
                         
-                        st.markdown("---") # 卡片分隔線
+                        st.markdown("---") 
 
         else:
             if search_term: st.warning("查無資料")
