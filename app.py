@@ -358,25 +358,18 @@ def main_app():
 
             result_count = len(final_df)
             
-            # === ⚡ 效能分流邏輯 ===
-            # 如果資料大於 50 筆，強制切換回純表格模式 (極速)
             if result_count > 50:
                 st.info(f"搜尋結果：共 {result_count} 筆 (請縮小搜尋範圍至 50 筆以內，以開啟試算按鈕)")
-                
-                # 使用高效能的原生表格
                 styler = final_df.style.format("{:,.0f}", subset=['牌價', '經銷價'], na_rep="")
                 styler = styler.set_properties(**{'font-size': '18px'})
                 styler = styler.set_properties(subset=['牌價', '經銷價'], **{'text-align': 'right'})
                 if '訂購品(V)' in final_df.columns:
                     styler = styler.set_properties(subset=['訂購品(V)'], **{'text-align': 'center'})
                 styler = styler.set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
-                
                 st.dataframe(styler, use_container_width=True, hide_index=True, height=600)
 
             else:
-                # 資料少於 50 筆，開啟「按鈕模式」
                 st.success(f"搜尋結果：共 {result_count} 筆 (點擊左側「試算」按鈕可進行報價)")
-                
                 cols = st.columns([1, 2, 1.5, 1.5, 2, 1])
                 fields = ["操作", "規格", "牌價", "經銷價", "說明", "訂購"]
                 for col, field in zip(cols, fields):
@@ -387,7 +380,6 @@ def main_app():
                     spec = str(row['規格']) if pd.notna(row['規格']) else ""
                     list_price = f"{row['牌價']:,.0f}" if pd.notna(row['牌價']) else ""
                     
-                    # [防崩潰] 安全取得價格
                     dist_price_val = row['經銷價']
                     if pd.isna(dist_price_val) or dist_price_val == "":
                         dist_price_val = None
@@ -400,7 +392,6 @@ def main_app():
 
                     c1, c2, c3, c4, c5, c6 = st.columns([1, 2, 1.5, 1.5, 2, 1])
                     
-                    # 只有在有價格時才顯示可用按鈕
                     if dist_price_val is not None:
                         if c1.button("試算", key=f"btn_{index}"):
                             st.session_state.selected_product = {
@@ -425,8 +416,6 @@ def main_app():
     else:
         st.error("資料庫連線異常，請稍後再試。")
 
+# === 移除全域防護罩 (讓 rerun 正常運作) ===
 if __name__ == "__main__":
-    try:
-        main_app()
-    except Exception as e:
-        st.error("系統暫時忙碌中，請重新整理或聯繫管理員。")
+    main_app()
